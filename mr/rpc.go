@@ -25,11 +25,12 @@ type ExampleReply struct {
 }
 
 type RequestTaskArgs struct {
-	X int
+	WorkerPID int
+	ReqTask   Task
 }
 
 type RequestTaskReply struct {
-	FileName string
+	ReplyTask Task
 }
 
 // Add your RPC definitions here.

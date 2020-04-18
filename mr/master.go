@@ -10,7 +10,7 @@ import (
 
 type Master struct {
 	// Your definitions here.
-	//task list
+	tasks []Task //task list
 	//worker list
 	//      Rule 1:
 
@@ -22,7 +22,8 @@ type Master struct {
  */
 /*------------------Paper------------------
 3.1 Execution Overview
-	1.The MapReduce library in the user program ﬁrst splits the input ﬁles into M pieces of typically 16 megabytes to 64 megabytes (MB) per piece (controllable by the user via an optional parameter).
+	1.The MapReduce library in the user program ﬁrst splits the input ﬁles into M pieces of typically 16 megabytes to 64 megabytes (MB) per piece
+	  (controllable by the user via an optional parameter).
 	  It then starts up many copies of the program on a cluster of machines.
 	2.There are M map tasks and R reduce tasks to assign.
 	  The master picks idle workers and assigns each one a map task or a reduce task.
@@ -72,12 +73,12 @@ The test script expects to see output in files named mr-out-X
 
 
 
-//Rule 1: The map phase should divide the intermediate keys into buckets for nReduce reduce tasks,
-//		  where nReduce is the argument that main/mrmaster.go passes to MakeMaster().
+//Rule 1: #The map phase should divide the intermediate keys into buckets for nReduce reduce tasks,
+//		  #where nReduce is the argument that main/mrmaster.go passes to MakeMaster().
 //Rule 2: The worker implementation should put the output of the X'th reduce task in the file mr-out-X.
 //Rule 3: A mr-out-X file should contain one line per Reduce function output.
 		  The line should be generated with the Go "%v %v"format, called with the key and value.
-		  Have a look in main/mrsequential.gofor the line commented "this is the correct format".
+		  Have a look in main/mrsequential.go for the line commented "this is the correct format".
 		  The test script will fail if your implementation deviates too much from this format.
 		  		// this is the correct format for each line of Reduce output.
 				fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
@@ -92,7 +93,7 @@ The test script expects to see output in files named mr-out-X
 //Hints 1:#One way to get started is to modify mr/worker.go's Worker() to send an RPC to the master asking for a task.
 //	      #Then modify the master to respond with the file name of an as-yet-unstarted map task.
 //		  #Then modify the worker to read that file and call the application Map function, as in mrsequential.go.
-//Hints 2:A reasonable naming convention for intermediate files is mr-X-Y, where X is the Map task number, and Y is the reduce task number.
+//Hints 2:#A reasonable naming convention for intermediate files is mr-X-Y, where X is the Map task number, and Y is the reduce task number.
 //Hints 3:The worker's map task code will need a way to store intermediate key/value pairs in files in a way
 		  that can be correctly read back during reduce tasks. One possibility is to use Go's encoding/json package.
 //Hints 4:The map part of your worker can use the ihash(key) function (in worker.go) to pick the reduce task for a given key.
@@ -131,7 +132,18 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 
 func (m *Master) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) error {
 	DPrintf("[RequestTask@master.go] RequestTask Entry")
-	reply.FileName = "pg-being_ernest.txt"
+	DPrintf("[RequestTask@master.go] args.WorkerPID:=[%d]  args.ReqTask:=[%s]", args.WorkerPID, args.ReqTask.String())
+
+	replytask := Task{}
+
+	if args.ReqTask.Num == -1 {
+		replytask = m.QueryTask(Map)
+	} else {
+		replytask = m.QueryTask(Reduce)
+	}
+
+	reply.ReplyTask = replytask
+
 	DPrintf("[RequestTask@master.go] RequestTask Exit")
 	return nil
 }
@@ -185,4 +197,37 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m.server()
 	DPrintf("[MakeMaster@master.go]MakeMaster Exit")
 	return &m
+}
+
+func (m *Master) DumpTaks() {
+	for i, task := range m.tasks {
+		DPrintf("[DumpRaft@raft.go] rf.tasks[%d] := [%s]", i, task.String())
+	}
+}
+
+func (m *Master) QueryTask(tasktype TaskType) Task {
+	DPrintf("[QueryTask@master.go] QueryTask Entry")
+	DPrintf("[QueryTask@master.go] tasktype:=[%d] ", tasktype)
+
+	replytask := Task{}
+
+	if tasktype == Map {
+		replytask = Task{
+			Num:    0,          //task number
+			Type:   Map,        //task cmd :map or reduce
+			Status: InProgress, //task state:idle, in-progress, or completed
+			FName:  "pg-being_ernest.txt",
+		}
+	}
+	if tasktype == Reduce {
+		replytask = Task{
+			Num:    0,          //task number
+			Type:   Reduce,     //task cmd :map or reduce
+			Status: InProgress, //task state:idle, in-progress, or completed
+			FName:  "mr-0-0",
+		}
+	}
+
+	DPrintf("[RequestTask@master.go] RequestTask Exit")
+	return replytask
 }

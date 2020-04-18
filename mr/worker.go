@@ -16,10 +16,10 @@ import (
 When the workers and master have finished, look at the output in mr-out-*.
 When you've completed the lab, the sorted union of the output files should match the sequential output, like this:
 
-
-
-
 */
+
+const nReduce int = 10
+
 // for sorting by key.
 type ByKey []KeyValue
 
@@ -34,6 +34,10 @@ func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 type KeyValue struct {
 	Key   string
 	Value string
+}
+
+func (m *KeyValue) String() string {
+	return fmt.Sprintf("KeyValue: Key:=[%s] Value:=[%s]", m.Key, m.Value)
 }
 
 //
@@ -54,15 +58,28 @@ func Worker(mapf func(string, string) []KeyValue,
 	DPrintf("[Worker@worker.go] Worker Entry")
 	// Your worker implementation here.
 
-	// uncomment to send the Example RPC to the master.
-	//CallExample()
-	filename := RequestTask()
+	reqtask := Task{
+		Num:    -1,   //task number
+		Type:   Map,  //task cmd :map or reduce
+		Status: Idle, //task state:idle, in-progress, or completed
 
-	// read each input file,
-	// pass it to Map,
-	intermediatefile := CallMap(mapf, filename)
+	}
 
-	CallReduce(intermediatefile, reducef)
+	for i := 0; i < 3; i++ {
+		replytask := RequestTask(reqtask)
+
+		DPrintf("[Worker@worker.go] replytask:=[%s]", replytask.String())
+
+		if replytask.Type == Map {
+			reqtask = CallMap(mapf, replytask)
+			DPrintf("[Worker@worker.go] CallMap return reqtask:=[%s]", reqtask.String())
+		}
+
+		if replytask.Type == Reduce {
+			replytask = CallReduce(replytask, reducef)
+			DPrintf("[Worker@worker.go] CallReduce return reqtask:=[%s]", reqtask.String())
+		}
+	}
 
 	DPrintf("[Worker@worker.go] Worker Exit")
 }
@@ -122,13 +139,15 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 //Hints 1:One way to get started is to modify mr/worker.go's Worker() to send an RPC to the master asking for a task.
 //	      Then modify the master to respond with the file name of an as-yet-unstarted map task.
 //		  Then modify the worker to read that file and call the application Map function, as in mrsequential.go.
-func RequestTask() string {
+func RequestTask(task Task) Task {
 
 	// declare an argument structure.
 	args := RequestTaskArgs{}
 
 	// fill in the argument(s).
-	args.X = 99
+
+	args.WorkerPID = os.Getpid()
+	args.ReqTask = task
 
 	// declare a reply structure.
 	reply := RequestTaskReply{}
@@ -136,13 +155,16 @@ func RequestTask() string {
 	// send the RPC request, wait for the reply.
 	call("Master.RequestTask", &args, &reply)
 
-	fmt.Printf("reply.FileName %s\n", reply.FileName)
-	return reply.FileName
+	return reply.ReplyTask
 }
 
 //
-func CallMap(mapf func(string, string) []KeyValue, filename string) string {
-	DPrintf("[CallMap@worker.go] CallMap Entry")
+func CallMap(mapf func(string, string) []KeyValue, maptask Task) Task {
+	DPrintf("[CallMap@worker.go] CallMap Entry, mapTask:=[%s]", maptask.String())
+
+	filename := maptask.FName
+	mapNo := maptask.Num
+
 	file, err := os.Open("../" + filename)
 	//file, err := os.Open("./" + filename)
 	if err != nil {
@@ -155,62 +177,94 @@ func CallMap(mapf func(string, string) []KeyValue, filename string) string {
 	file.Close()
 	kva := mapf(filename, string(content))
 
-	mrfile, err := os.Create("mr.json")
-	if err != nil {
-		log.Fatalf("cannot open mr.json")
-	}
-	json.NewEncoder(file)
+	//Hints 2:A reasonable naming convention for intermediate files is mr-X-Y,
+	//		  where X is the Map task number, and Y is the reduce task number.
+	mapfile := make(map[int]*os.File)
+	encjsn := make(map[int]*json.Encoder)
 
-	enc := json.NewEncoder(mrfile)
-	for _, kv := range kva {
-		err := enc.Encode(&kv)
+	for i := 0; i < nReduce; i++ {
+		tmp := fmt.Sprintf("mr-%d-%d", mapNo, i)
+		//DPrintf("[CallMap@worker.go] mapfile := [%s]", tmp)
+		mapfile[i], err = os.Create(tmp)
 		if err != nil {
-			log.Fatalf("cannot Encode  mr.json")
+			log.Fatalf("cannot Create file : [%s]", tmp)
+		}
+		json.NewEncoder(mapfile[i])
+		encjsn[i] = json.NewEncoder(mapfile[i])
+		defer mapfile[i].Close()
+	}
+
+	for _, kv := range kva {
+		r := ihash(kv.Key) % 10
+		err := encjsn[r].Encode(&kv)
+		if err != nil {
+			log.Fatalf("cannot Encode kv:=[%s]", kv.String())
 		}
 	}
-
 	DPrintf("[CallMap@worker.go] CallMap Exit")
-	return "mr.json"
+	maptask.Status = Completed
+	return maptask
 }
 
-func CallReduce(filename string, reducef func(string, []string) string) {
-	DPrintf("[CallReduce@worker.go] CallReduce Entry")
+func CallReduce(reducetask Task, reducef func(string, []string) string) Task {
+	DPrintf("[CallReduce@worker.go] CallReduce Entry, reducetask:=[%s]", reducetask.String())
+
+	oname := fmt.Sprintf("mr-out-%d", reducetask.Num)
+	ofile, err := os.Create(oname)
+	if err != nil {
+		log.Fatalf("cannot Create [%s]", oname)
+	}
+	defer ofile.Close()
 
 	intermediate := []KeyValue{}
-	file, err := os.Open(filename)
-	//file, err := os.Open("./" + filename)
-	if err != nil {
-		log.Fatalf("cannot open [%v]", filename)
-	}
 
-	dec := json.NewDecoder(file)
-	for {
-		var kv KeyValue
-		if err := dec.Decode(&kv); err != nil {
-			break
+	filename := reducetask.FName
+
+	for i := 0; i < nReduce; i++ {
+		//TODO(hyx):need changeto ("mr-%d-%d", i,reducetask.Num)
+		filename = fmt.Sprintf("mr-0-%d", i)
+		//DPrintf("[CallReduce@worker.go] filename := [%s]", filename)
+
+		file, err := os.Open(filename)
+		//file, err := os.Open("./" + filename)
+		if err != nil {
+			DPrintf("[CallReduce@worker.go] cannot open filename := [%s]", filename)
+			//log.Fatalf("cannot open [%v]", filename)
+			continue
 		}
-		intermediate = append(intermediate, kv)
+
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			intermediate = append(intermediate, kv)
+		}
+		file.Close()
 	}
 
 	sort.Sort(ByKey(intermediate))
-
-	oname := "mr-out-0"
-	ofile, _ := os.Create(oname)
 
 	//
 	// call Reduce on each distinct key in intermediate[],
 	// and print the result to mr-out-0.
 	//
 	i := 0
+	DPrintf("[CallReduce@worker.go] intermediate len := [%d] ", len(intermediate))
 	for i < len(intermediate) {
 		j := i + 1
 		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
 			j++
 		}
+		r := ihash(intermediate[i].Key) % 10
+		r = r + 1 - 1
+		//DPrintf("[CallReduce@worker.go]   i := [%d]   j := [%d] r := [%d] intermediate[i].Key :=[%v] ", i, j, r, intermediate[i].Key)
 		values := []string{}
 		for k := i; k < j; k++ {
 			values = append(values, intermediate[k].Value)
 		}
+
 		output := reducef(intermediate[i].Key, values)
 
 		// this is the correct format for each line of Reduce output.
@@ -218,7 +272,7 @@ func CallReduce(filename string, reducef func(string, []string) string) {
 
 		i = j
 	}
-
-	ofile.Close()
 	DPrintf("[CallReduce@worker.go] CallReduce Exit")
+	reducetask.Status = Completed
+	return reducetask
 }
