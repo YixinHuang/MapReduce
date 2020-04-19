@@ -9,11 +9,11 @@ import (
 )
 
 type Master struct {
-	// Your definitions here.
-	tasks []Task //task list
-	//worker list
-	//      Rule 1:
+	mrphase MRPhaseType
 
+	maplist    []Task //task list
+	reducelist []Task //task list
+	//worker list
 }
 
 /*        RPC
@@ -75,15 +75,16 @@ The test script expects to see output in files named mr-out-X
 
 //Rule 1: #The map phase should divide the intermediate keys into buckets for nReduce reduce tasks,
 //		  #where nReduce is the argument that main/mrmaster.go passes to MakeMaster().
-//Rule 2: The worker implementation should put the output of the X'th reduce task in the file mr-out-X.
-//Rule 3: A mr-out-X file should contain one line per Reduce function output.
+//Rule 2: #The worker implementation should put the output of the X'th reduce task in the file mr-out-X.
+//Rule 3: #A mr-out-X file should contain one line per Reduce function output.
 		  The line should be generated with the Go "%v %v"format, called with the key and value.
 		  Have a look in main/mrsequential.go for the line commented "this is the correct format".
 		  The test script will fail if your implementation deviates too much from this format.
 		  		// this is the correct format for each line of Reduce output.
 				fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
-//Rule 4: The worker should put intermediate Map output in files in the current directory, where your worker can later read them as input to Reduce tasks.
-//Rule 5: main/mrmaster.go expects mr/master.go to implement a Done() method that returns true when the MapReduce job is completely finished; at that point, mrmaster.go will exit.
+//Rule 4: #The worker should put intermediate Map output in files in the current directory, where your worker can later read them as input to Reduce tasks.
+//Rule 5: main/mrmaster.go expects mr/master.go to implement a Done() method that returns true when the MapReduce job is completely finished;
+		  at that point, mrmaster.go will exit.
 //Rule 6: When the job is completely finished, the worker processes should exit.
 		  A simple way to implement this is to use the return value from call(): if the worker fails to contact the master,
 		  it can assume that the master has exited because the job is done, and so the worker can terminate too.
@@ -94,9 +95,9 @@ The test script expects to see output in files named mr-out-X
 //	      #Then modify the master to respond with the file name of an as-yet-unstarted map task.
 //		  #Then modify the worker to read that file and call the application Map function, as in mrsequential.go.
 //Hints 2:#A reasonable naming convention for intermediate files is mr-X-Y, where X is the Map task number, and Y is the reduce task number.
-//Hints 3:The worker's map task code will need a way to store intermediate key/value pairs in files in a way
+//Hints 3:#The worker's map task code will need a way to store intermediate key/value pairs in files in a way
 		  that can be correctly read back during reduce tasks. One possibility is to use Go's encoding/json package.
-//Hints 4:The map part of your worker can use the ihash(key) function (in worker.go) to pick the reduce task for a given key.
+//Hints 4:#The map part of your worker can use the ihash(key) function (in worker.go) to pick the reduce task for a given key.
 //Hints 5:You can steal some code from mrsequential.go for reading Map input files, for sorting intermedate key/value pairs between the Map and Reduce,
 		  and for storing Reduce output in files.
 //Hints 6:The master, as an RPC server, will be concurrent; don't forget to lock shared data.
@@ -136,15 +137,63 @@ func (m *Master) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) err
 
 	replytask := Task{}
 
-	if args.ReqTask.Num == -1 {
+	/*if m.mrphase == MapPhase {
+		if args.ReqTask.Num == -1 {
+			replytask = m.QueryTask()
+		} else {
+			if args.ReqTask.Status == Completed {
+				DPrintf("[RequestTask@master.go] args.WorkerPID:=[%d]  MapPhase Update Task List Info", args.WorkerPID)
+				m.UpdateTask(Map, &args.ReqTask)
+				replytask = m.QueryTask()
+			}
+		}
+	}
+
+	if m.mrphase == ReducePhase {
+
+		if args.ReqTask.Status == Completed {
+			DPrintf("[RequestTask@master.go] args.WorkerPID:=[%d]  ReducePhase Update Task List Info", args.WorkerPID)
+			m.UpdateTask(Reduce, &args.ReqTask)
+			replytask = m.QueryTask()
+		}
+	}*/
+	switch m.mrphase {
+	case MapPhase:
+		if args.ReqTask.Num == -1 {
+			replytask = m.QueryTask()
+		} else {
+			if args.ReqTask.Status == Completed {
+				DPrintf("[RequestTask@master.go] args.WorkerPID:=[%d]  MapPhase Update Task List Info", args.WorkerPID)
+				m.UpdateTask(Map, &args.ReqTask)
+				replytask = m.QueryTask()
+			}
+		}
+	case ReducePhase:
+		if args.ReqTask.Status == Completed {
+			DPrintf("[RequestTask@master.go] args.WorkerPID:=[%d]  ReducePhase Update Task List Info", args.WorkerPID)
+			m.UpdateTask(Reduce, &args.ReqTask)
+			replytask = m.QueryTask()
+		}
+	default:
+		DPrintf("[RequestTask@master.go]XXX Default ")
+	}
+
+	/*if args.ReqTask.Num == -1 {
+		DPrintf("[RequestTask@master.go] args.WorkerPID:=[%d]  Request New Task", args.WorkerPID)
 		replytask = m.QueryTask(Map)
 	} else {
+		//if args.ReqTask.Status == Completed {
+		//	DPrintf("[RequestTask@master.go] args.WorkerPID:=[%d]  Update Task List Info", args.WorkerPID)
+		//Update Taks list
+		//} else {
 		replytask = m.QueryTask(Reduce)
-	}
+		//}
+	}*/
 
 	reply.ReplyTask = replytask
 
-	DPrintf("[RequestTask@master.go] RequestTask Exit")
+	m.DumpTaksList()
+	DPrintf("[RequestTask@master.go] RequestTask Exit, replytask:=[%s]", replytask.String())
 	return nil
 }
 
@@ -186,12 +235,30 @@ func (m *Master) Done() bool {
 // nReduce is the number of reduce tasks to use.
 //
 func MakeMaster(files []string, nReduce int) *Master {
-	m := Master{}
-
-	// Your code here.
 	DPrintf("[MakeMaster@master.go]MakeMaster Entry ,nReduce:=[%d]", nReduce)
+	m := Master{}
+	m.mrphase = MapPhase
+
 	for i, fname := range files {
 		DPrintf("[MakeMaster@master.go] files[%d] := [%s]", i, fname)
+		maptask := Task{
+			Num:    i,    //task number
+			Type:   Map,  //task cmd :map or reduce
+			Status: Idle, //task state:idle, in-progress, or completed
+			FName:  fname,
+		}
+		m.maplist = append(m.maplist, maptask)
+	}
+
+	for i := 0; i < nReduce; i++ {
+		reducetask := Task{
+			Num:    i,      //task number
+			Type:   Reduce, //task cmd :map or reduce
+			Status: Idle,   //task state:idle, in-progress, or completed
+			FName:  "mr-0-0",
+		}
+		m.reducelist = append(m.reducelist, reducetask)
+		m.DumpTaksList()
 	}
 
 	m.server()
@@ -199,35 +266,96 @@ func MakeMaster(files []string, nReduce int) *Master {
 	return &m
 }
 
-func (m *Master) DumpTaks() {
-	for i, task := range m.tasks {
-		DPrintf("[DumpRaft@raft.go] rf.tasks[%d] := [%s]", i, task.String())
+func (m *Master) DumpTaksList() {
+	for i, task := range m.maplist {
+		DPrintf("[DumpTaksList@master.go] m.maplist[%d] := [%s]", i, task.String())
+	}
+	for i, task := range m.reducelist {
+		DPrintf("[DumpTaksList@master.go] m.reducelist[%d] := [%s]", i, task.String())
 	}
 }
 
-func (m *Master) QueryTask(tasktype TaskType) Task {
+func (m *Master) QueryTask() Task {
 	DPrintf("[QueryTask@master.go] QueryTask Entry")
-	DPrintf("[QueryTask@master.go] tasktype:=[%d] ", tasktype)
-
 	replytask := Task{}
 
-	if tasktype == Map {
-		replytask = Task{
+	if m.mrphase == MapPhase {
+		/*replytask = Task{
 			Num:    0,          //task number
 			Type:   Map,        //task cmd :map or reduce
 			Status: InProgress, //task state:idle, in-progress, or completed
 			FName:  "pg-being_ernest.txt",
+		}*/
+		for i, task := range m.maplist {
+			if task.Status == Idle {
+				DPrintf("[DumpTaksList@master.go] m.maplist[%d] := [%s]", i, task.String())
+				return task
+			}
+		}
+
+	}
+	if m.mrphase == ReducePhase {
+		/*replytask = Task{
+			Num:    0,          //task number
+			Type:   Reduce,     //task cmd :map or reduce
+			Status: InProgress, //task state:idle, in-progress, or completed
+			FName:  "mr-0-0",
+		}*/
+		for i, task := range m.reducelist {
+			if task.Status == Idle {
+				DPrintf("[DumpTaksList@master.go] m.reducelist[%d] := [%s]", i, task.String())
+				return task
+			}
 		}
 	}
-	if tasktype == Reduce {
+
+	/*if m.mrphase == ReducePhase {
 		replytask = Task{
 			Num:    0,          //task number
 			Type:   Reduce,     //task cmd :map or reduce
 			Status: InProgress, //task state:idle, in-progress, or completed
 			FName:  "mr-0-0",
 		}
-	}
+	}*/
 
 	DPrintf("[RequestTask@master.go] RequestTask Exit")
 	return replytask
+}
+
+func (m *Master) UpdateTask(tasktype TaskType, uptask *Task) {
+	DPrintf("[UpdateTask@master.go] UpdateTask Entry")
+	DPrintf("[UpdateTask@master.go] tasktype:=[%d] task:=[%s]", tasktype, uptask.String())
+
+	if tasktype == Map {
+		for i, task := range m.maplist {
+			if task.Num == uptask.Num {
+				m.maplist[i].Status = uptask.Status
+				DPrintf("[UpdateTask@master.go] m.maplist[%d] := [%s]", i, m.maplist[i].String())
+				if i == len(m.maplist)-1 {
+					DPrintf("[UpdateTask@master.go] *******************Change to Reduce Phase********************")
+					m.mrphase = ReducePhase
+				}
+				break
+			}
+		}
+
+	}
+
+	if tasktype == Reduce {
+		for i, task := range m.reducelist {
+			if task.Num == uptask.Num {
+				m.reducelist[i].Status = uptask.Status
+				DPrintf("[UpdateTask@master.go] m.maplist[%d] := [%s]", i, m.reducelist[i].String())
+				if i == len(m.reducelist)-1 {
+					DPrintf("[UpdateTask@master.go] *******************Change to Finish Phase********************")
+					m.mrphase = FinishPhase
+				}
+				break
+			}
+		}
+
+	}
+
+	DPrintf("[UpdateTask@master.go] UpdateTask Exit")
+
 }

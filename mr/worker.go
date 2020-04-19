@@ -65,7 +65,7 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	}
 
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 19; i++ {
 		replytask := RequestTask(reqtask)
 
 		DPrintf("[Worker@worker.go] replytask:=[%s]", replytask.String())
@@ -76,7 +76,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		}
 
 		if replytask.Type == Reduce {
-			replytask = CallReduce(replytask, reducef)
+			reqtask = CallReduce(replytask, reducef)
 			DPrintf("[Worker@worker.go] CallReduce return reqtask:=[%s]", reqtask.String())
 		}
 	}
@@ -165,7 +165,8 @@ func CallMap(mapf func(string, string) []KeyValue, maptask Task) Task {
 	filename := maptask.FName
 	mapNo := maptask.Num
 
-	file, err := os.Open("../" + filename)
+	//file, err := os.Open("../" + filename)
+	file, err := os.Open(filename)
 	//file, err := os.Open("./" + filename)
 	if err != nil {
 		log.Fatalf("cannot open [%v]", filename)
@@ -220,9 +221,10 @@ func CallReduce(reducetask Task, reducef func(string, []string) string) Task {
 
 	filename := reducetask.FName
 
-	for i := 0; i < nReduce; i++ {
-		//TODO(hyx):need changeto ("mr-%d-%d", i,reducetask.Num)
-		filename = fmt.Sprintf("mr-0-%d", i)
+	//TODO(hyx):need change fix number 8
+	for i := 0; i < 8; i++ {
+
+		filename = fmt.Sprintf("mr-%d-%d", i, reducetask.Num)
 		//DPrintf("[CallReduce@worker.go] filename := [%s]", filename)
 
 		file, err := os.Open(filename)

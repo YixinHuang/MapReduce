@@ -2,6 +2,14 @@ package mr
 
 import "fmt"
 
+type MRPhaseType int
+
+const (
+	MapPhase    MRPhaseType = 0
+	ReducePhase MRPhaseType = 1
+	FinishPhase MRPhaseType = 2
+)
+
 type TaskType int
 
 const (
