@@ -53,7 +53,15 @@ type Task struct {
 	//stores the locations and sizes of the R intermediate ﬁle regions produced by the map
 }
 
-func (m *Task) Reset() { *m = Task{} }
+func (m *Task) Reset() { *m = Task{Num: -1} }
 func (m *Task) String() string {
 	return fmt.Sprintf("Task: Num:=[%d] Type:=[%s] Status:=[%s] FName:=[%s]", m.Num, m.Type.String(), m.Status.String(), m.FName)
+}
+
+//replytask.FName = "FinishPhase"
+func (m *Task) IsFinished() bool {
+	if m.FName == "FinishPhase" && m.Num == -1 {
+		return true
+	}
+	return false
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"sync"
 )
 
 type Master struct {
@@ -14,6 +15,7 @@ type Master struct {
 	maplist    []Task //task list
 	reducelist []Task //task list
 	//worker list
+	mu sync.Mutex // Lock to protect shared access to this
 }
 
 /*        RPC
@@ -83,9 +85,9 @@ The test script expects to see output in files named mr-out-X
 		  		// this is the correct format for each line of Reduce output.
 				fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
 //Rule 4: #The worker should put intermediate Map output in files in the current directory, where your worker can later read them as input to Reduce tasks.
-//Rule 5: main/mrmaster.go expects mr/master.go to implement a Done() method that returns true when the MapReduce job is completely finished;
+//Rule 5: #main/mrmaster.go expects mr/master.go to implement a Done() method that returns true when the MapReduce job is completely finished;
 		  at that point, mrmaster.go will exit.
-//Rule 6: When the job is completely finished, the worker processes should exit.
+//Rule 6: #When the job is completely finished, the worker processes should exit.
 		  A simple way to implement this is to use the return value from call(): if the worker fails to contact the master,
 		  it can assume that the master has exited because the job is done, and so the worker can terminate too.
 		  Depending on your design, you might also find it helpful to have a "please exit" pseudo-task that the master can give to workers.
@@ -101,8 +103,8 @@ The test script expects to see output in files named mr-out-X
 //Hints 5:You can steal some code from mrsequential.go for reading Map input files, for sorting intermedate key/value pairs between the Map and Reduce,
 		  and for storing Reduce output in files.
 //Hints 6:The master, as an RPC server, will be concurrent; don't forget to lock shared data.
-//Hints 7:Workers will sometimes need to wait, e.g. reduces can't start until the last map has finished.
-		  One possibility is for workers to periodically ask the master for work, sleeping with time.Sleep() between each request.
+//Hints 7:#Workers will sometimes need to wait, e.g. reduces can't start until the last map has finished.
+		  #One possibility is for workers to periodically ask the master for work, sleeping with time.Sleep() between each request.
 		  Another possibility is for the relevant RPC handler in the master to have a loop that waits, either with time.Sleep() or sync.Cond.
 		  Go runs the handler for each RPC in its own thread, so the fact that one handler is waiting won't prevent the master from processing other RPCs.
 //Hints 8:The master can't reliably distinguish between crashed workers, workers that are alive but have stalled for some reason,
@@ -135,28 +137,12 @@ func (m *Master) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) err
 	DPrintf("[RequestTask@master.go] RequestTask Entry")
 	DPrintf("[RequestTask@master.go] args.WorkerPID:=[%d]  args.ReqTask:=[%s]", args.WorkerPID, args.ReqTask.String())
 
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	replytask := Task{}
+	replytask.Reset()
 
-	/*if m.mrphase == MapPhase {
-		if args.ReqTask.Num == -1 {
-			replytask = m.QueryTask()
-		} else {
-			if args.ReqTask.Status == Completed {
-				DPrintf("[RequestTask@master.go] args.WorkerPID:=[%d]  MapPhase Update Task List Info", args.WorkerPID)
-				m.UpdateTask(Map, &args.ReqTask)
-				replytask = m.QueryTask()
-			}
-		}
-	}
-
-	if m.mrphase == ReducePhase {
-
-		if args.ReqTask.Status == Completed {
-			DPrintf("[RequestTask@master.go] args.WorkerPID:=[%d]  ReducePhase Update Task List Info", args.WorkerPID)
-			m.UpdateTask(Reduce, &args.ReqTask)
-			replytask = m.QueryTask()
-		}
-	}*/
 	switch m.mrphase {
 	case MapPhase:
 		if args.ReqTask.Num == -1 {
@@ -174,21 +160,12 @@ func (m *Master) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) err
 			m.UpdateTask(Reduce, &args.ReqTask)
 			replytask = m.QueryTask()
 		}
+	case FinishPhase:
+		DPrintf("[RequestTask@master.go] args.WorkerPID:=[%d]  FinishPhase return empty task", args.WorkerPID)
+		replytask.FName = "FinishPhase"
 	default:
 		DPrintf("[RequestTask@master.go]XXX Default ")
 	}
-
-	/*if args.ReqTask.Num == -1 {
-		DPrintf("[RequestTask@master.go] args.WorkerPID:=[%d]  Request New Task", args.WorkerPID)
-		replytask = m.QueryTask(Map)
-	} else {
-		//if args.ReqTask.Status == Completed {
-		//	DPrintf("[RequestTask@master.go] args.WorkerPID:=[%d]  Update Task List Info", args.WorkerPID)
-		//Update Taks list
-		//} else {
-		replytask = m.QueryTask(Reduce)
-		//}
-	}*/
 
 	reply.ReplyTask = replytask
 
@@ -222,9 +199,10 @@ func (m *Master) server() {
 //
 func (m *Master) Done() bool {
 	ret := false
-
-	// Your code here.
-
+	if m.mrphase == FinishPhase {
+		ret = true
+		DPrintf("[Done@master.go]Done Exit ,ret:=[%t] because FinishPhase", ret)
+	}
 	//DPrintf("[Done@master.go]Done Exit ,ret:=[%t]",ret )
 	return ret
 }
@@ -278,47 +256,28 @@ func (m *Master) DumpTaksList() {
 func (m *Master) QueryTask() Task {
 	DPrintf("[QueryTask@master.go] QueryTask Entry")
 	replytask := Task{}
+	replytask.Reset()
 
 	if m.mrphase == MapPhase {
-		/*replytask = Task{
-			Num:    0,          //task number
-			Type:   Map,        //task cmd :map or reduce
-			Status: InProgress, //task state:idle, in-progress, or completed
-			FName:  "pg-being_ernest.txt",
-		}*/
 		for i, task := range m.maplist {
 			if task.Status == Idle {
-				DPrintf("[DumpTaksList@master.go] m.maplist[%d] := [%s]", i, task.String())
+				DPrintf("[QueryTask@master.go] m.maplist[%d] := [%s]", i, task.String())
 				return task
 			}
 		}
-
 	}
 	if m.mrphase == ReducePhase {
-		/*replytask = Task{
-			Num:    0,          //task number
-			Type:   Reduce,     //task cmd :map or reduce
-			Status: InProgress, //task state:idle, in-progress, or completed
-			FName:  "mr-0-0",
-		}*/
 		for i, task := range m.reducelist {
 			if task.Status == Idle {
-				DPrintf("[DumpTaksList@master.go] m.reducelist[%d] := [%s]", i, task.String())
+				DPrintf("[QueryTask@master.go] m.reducelist[%d] := [%s]", i, task.String())
 				return task
 			}
 		}
 	}
-
-	/*if m.mrphase == ReducePhase {
-		replytask = Task{
-			Num:    0,          //task number
-			Type:   Reduce,     //task cmd :map or reduce
-			Status: InProgress, //task state:idle, in-progress, or completed
-			FName:  "mr-0-0",
-		}
-	}*/
-
-	DPrintf("[RequestTask@master.go] RequestTask Exit")
+	if m.mrphase == FinishPhase {
+		DPrintf("[QueryTask@master.go] FinishPhase Return Empty Task")
+	}
+	DPrintf("[QueryTask@master.go] QueryTask Exit, replytask:=[%s]", replytask.String())
 	return replytask
 }
 

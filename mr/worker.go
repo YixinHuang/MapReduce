@@ -9,6 +9,7 @@ import (
 	"net/rpc"
 	"os"
 	"sort"
+	"time"
 )
 
 /*
@@ -58,19 +59,20 @@ func Worker(mapf func(string, string) []KeyValue,
 	DPrintf("[Worker@worker.go] Worker Entry")
 	// Your worker implementation here.
 
-	reqtask := Task{
-		Num:    -1,   //task number
-		Type:   Map,  //task cmd :map or reduce
-		Status: Idle, //task state:idle, in-progress, or completed
+	reqtask := Task{}
+	reqtask.Reset()
 
-	}
-
-	for i := 0; i < 19; i++ {
+	for {
 		replytask := RequestTask(reqtask)
+
+		if replytask.IsFinished() {
+			DPrintf("[Worker@worker.go] Worker Exit, because Master in FinishedPhase")
+			break
+		}
 
 		DPrintf("[Worker@worker.go] replytask:=[%s]", replytask.String())
 
-		if replytask.Type == Map {
+		if replytask.Type == Map && replytask.Num != -1 {
 			reqtask = CallMap(mapf, replytask)
 			DPrintf("[Worker@worker.go] CallMap return reqtask:=[%s]", reqtask.String())
 		}
@@ -79,6 +81,8 @@ func Worker(mapf func(string, string) []KeyValue,
 			reqtask = CallReduce(replytask, reducef)
 			DPrintf("[Worker@worker.go] CallReduce return reqtask:=[%s]", reqtask.String())
 		}
+
+		time.Sleep(5 * time.Millisecond)
 	}
 
 	DPrintf("[Worker@worker.go] Worker Exit")
@@ -161,6 +165,11 @@ func RequestTask(task Task) Task {
 //
 func CallMap(mapf func(string, string) []KeyValue, maptask Task) Task {
 	DPrintf("[CallMap@worker.go] CallMap Entry, mapTask:=[%s]", maptask.String())
+
+	if maptask.Num == -1 {
+		DPrintf("[CallMap@worker.go] CallMap Exit, mapTask:=[%s]", maptask.String())
+		return maptask
+	}
 
 	filename := maptask.FName
 	mapNo := maptask.Num
