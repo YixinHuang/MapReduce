@@ -262,6 +262,7 @@ func (m *Master) QueryTask() Task {
 		for i, task := range m.maplist {
 			if task.Status == Idle {
 				DPrintf("[QueryTask@master.go] m.maplist[%d] := [%s]", i, task.String())
+				m.maplist[i].Status = InProgress
 				return task
 			}
 		}
@@ -270,6 +271,7 @@ func (m *Master) QueryTask() Task {
 		for i, task := range m.reducelist {
 			if task.Status == Idle {
 				DPrintf("[QueryTask@master.go] m.reducelist[%d] := [%s]", i, task.String())
+				m.reducelist[i].Status = InProgress
 				return task
 			}
 		}
@@ -283,14 +285,19 @@ func (m *Master) QueryTask() Task {
 
 func (m *Master) UpdateTask(tasktype TaskType, uptask *Task) {
 	DPrintf("[UpdateTask@master.go] UpdateTask Entry")
-	DPrintf("[UpdateTask@master.go] tasktype:=[%d] task:=[%s]", tasktype, uptask.String())
+	DPrintf("[UpdateTask@master.go] tasktype:=[%s] task:=[%s]", tasktype.String(), uptask.String())
+
+	allCompleted := true
 
 	if tasktype == Map {
 		for i, task := range m.maplist {
-			if task.Num == uptask.Num {
+			if task.Status != Completed {
+				allCompleted = false
+			}
+			if task.Num == uptask.Num && uptask.Type == Map {
 				m.maplist[i].Status = uptask.Status
 				DPrintf("[UpdateTask@master.go] m.maplist[%d] := [%s]", i, m.maplist[i].String())
-				if i == len(m.maplist)-1 {
+				if i == len(m.maplist)-1 && allCompleted {
 					DPrintf("[UpdateTask@master.go] *******************Change to Reduce Phase********************")
 					m.mrphase = ReducePhase
 				}
@@ -302,10 +309,13 @@ func (m *Master) UpdateTask(tasktype TaskType, uptask *Task) {
 
 	if tasktype == Reduce {
 		for i, task := range m.reducelist {
-			if task.Num == uptask.Num {
+			if task.Status != Completed {
+				allCompleted = false
+			}
+			if task.Num == uptask.Num && uptask.Type == Reduce {
 				m.reducelist[i].Status = uptask.Status
-				DPrintf("[UpdateTask@master.go] m.maplist[%d] := [%s]", i, m.reducelist[i].String())
-				if i == len(m.reducelist)-1 {
+				DPrintf("[UpdateTask@master.go] m.reducelist[%d] := [%s]", i, m.reducelist[i].String())
+				if i == len(m.reducelist)-1 && allCompleted {
 					DPrintf("[UpdateTask@master.go] *******************Change to Finish Phase********************")
 					m.mrphase = FinishPhase
 				}
