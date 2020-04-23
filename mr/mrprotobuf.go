@@ -1,6 +1,10 @@
 package mr
 
-import "fmt"
+import (
+	"fmt"
+	"log"
+	"time"
+)
 
 type MRPhaseType int
 
@@ -9,6 +13,16 @@ const (
 	ReducePhase MRPhaseType = 1
 	FinishPhase MRPhaseType = 2
 )
+
+var Phaseype_name = [...]string{
+	"Map Phase",
+	"Reduce Phase",
+	"Finish Phase",
+}
+
+func (x MRPhaseType) String() string {
+	return Phaseype_name[x]
+}
 
 type TaskType int
 
@@ -64,4 +78,17 @@ func (m *Task) IsFinished() bool {
 		return true
 	}
 	return false
+}
+
+func (m *Task) ResetStatus(master *Master) {
+	DPrintf("[ResetStatus@mrprotobuf.go] QueryTask Entry")
+	time.Sleep(5 * time.Second) //observe no output
+	master.mu.Lock()
+	if m.Status == InProgress {
+		log.Printf("ResetStatus: Task [%s] \n", m.String())
+		DPrintf("[ResetStatus@mrprotobuf.go] Task [%s] \n", m.String())
+		m.Status = Idle
+	}
+	master.mu.Unlock()
+	DPrintf("[ResetStatus@mrprotobuf.go] QueryTask Entry")
 }

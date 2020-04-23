@@ -134,14 +134,15 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (m *Master) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) error {
-	DPrintf("[RequestTask@master.go] RequestTask Entry")
-	DPrintf("[RequestTask@master.go] args.WorkerPID:=[%d]  args.ReqTask:=[%s]", args.WorkerPID, args.ReqTask.String())
+	DPrintf("[RequestTask@master.go][%d] RequestTask Entry,m.mrphase:=[%s],args.ReqTask:=[%s]", args.WorkerPID, m.mrphase.String(), args.ReqTask.String())
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	replytask := Task{}
 	replytask.Reset()
+
+	DPrintf("[RequestTask@master.go][%d]  Got Lock", args.WorkerPID)
 
 	switch m.mrphase {
 	case MapPhase:
@@ -155,22 +156,27 @@ func (m *Master) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) err
 			}
 		}
 	case ReducePhase:
-		if args.ReqTask.Status == Completed {
-			DPrintf("[RequestTask@master.go] args.WorkerPID:=[%d]  ReducePhase Update Task List Info", args.WorkerPID)
-			m.UpdateTask(Reduce, &args.ReqTask)
+		if args.ReqTask.Num == -1 {
 			replytask = m.QueryTask()
+		} else {
+			if args.ReqTask.Status == Completed {
+				DPrintf("[RequestTask@master.go] args.WorkerPID:=[%d]  ReducePhase Update Task List Info", args.WorkerPID)
+				m.UpdateTask(Reduce, &args.ReqTask)
+				replytask = m.QueryTask()
+			}
 		}
 	case FinishPhase:
 		DPrintf("[RequestTask@master.go] args.WorkerPID:=[%d]  FinishPhase return empty task", args.WorkerPID)
 		replytask.FName = "FinishPhase"
 	default:
-		DPrintf("[RequestTask@master.go]XXX Default ")
+		DPrintf("[RequestTask@master.go][%d]XXX Default ", args.WorkerPID)
 	}
 
 	reply.ReplyTask = replytask
 
 	m.DumpTaksList()
-	DPrintf("[RequestTask@master.go] RequestTask Exit, replytask:=[%s]", replytask.String())
+
+	DPrintf("[RequestTask@master.go][%d] RequestTask Exit, replytask:=[%s] ,m.mrphase:=[%s]", args.WorkerPID, replytask.String(), m.mrphase.String())
 	return nil
 }
 
@@ -254,7 +260,7 @@ func (m *Master) DumpTaksList() {
 }
 
 func (m *Master) QueryTask() Task {
-	DPrintf("[QueryTask@master.go] QueryTask Entry")
+	DPrintf("[QueryTask@master.go] QueryTask Entry ,m.mrphase:=[%s]", m.mrphase.String())
 	replytask := Task{}
 	replytask.Reset()
 
@@ -263,6 +269,7 @@ func (m *Master) QueryTask() Task {
 			if task.Status == Idle {
 				DPrintf("[QueryTask@master.go] m.maplist[%d] := [%s]", i, task.String())
 				m.maplist[i].Status = InProgress
+				go m.maplist[i].ResetStatus(m)
 				return task
 			}
 		}
@@ -272,6 +279,7 @@ func (m *Master) QueryTask() Task {
 			if task.Status == Idle {
 				DPrintf("[QueryTask@master.go] m.reducelist[%d] := [%s]", i, task.String())
 				m.reducelist[i].Status = InProgress
+				go m.reducelist[i].ResetStatus(m)
 				return task
 			}
 		}
@@ -279,7 +287,7 @@ func (m *Master) QueryTask() Task {
 	if m.mrphase == FinishPhase {
 		DPrintf("[QueryTask@master.go] FinishPhase Return Empty Task")
 	}
-	DPrintf("[QueryTask@master.go] QueryTask Exit, replytask:=[%s]", replytask.String())
+	DPrintf("[QueryTask@master.go] QueryTask Exit, replytask:=[%s] m.mrphase:=[%s]", replytask.String(), m.mrphase.String())
 	return replytask
 }
 
@@ -297,15 +305,21 @@ func (m *Master) UpdateTask(tasktype TaskType, uptask *Task) {
 			if task.Num == uptask.Num && uptask.Type == Map {
 				m.maplist[i].Status = uptask.Status
 				DPrintf("[UpdateTask@master.go] m.maplist[%d] := [%s]", i, m.maplist[i].String())
-				if i == len(m.maplist)-1 && allCompleted {
-					DPrintf("[UpdateTask@master.go] *******************Change to Reduce Phase********************")
+				if i == len(m.maplist)-1 && allCompleted && m.mrphase == MapPhase {
+					DPrintf("[UpdateTask@master.go] *******************Change to Reduce Phase 1 allCompleted:=[%t]********************", allCompleted)
 					m.mrphase = ReducePhase
 				}
-				break
 			}
+		}
+		//Doucble check
+		if allCompleted && m.mrphase == MapPhase {
+			DPrintf("[UpdateTask@master.go] *******************Change to Reduce Phase 2 allCompleted:=[%t]********************", allCompleted)
+			m.mrphase = ReducePhase
 		}
 
 	}
+
+	allCompleted = true
 
 	if tasktype == Reduce {
 		for i, task := range m.reducelist {
@@ -315,12 +329,16 @@ func (m *Master) UpdateTask(tasktype TaskType, uptask *Task) {
 			if task.Num == uptask.Num && uptask.Type == Reduce {
 				m.reducelist[i].Status = uptask.Status
 				DPrintf("[UpdateTask@master.go] m.reducelist[%d] := [%s]", i, m.reducelist[i].String())
-				if i == len(m.reducelist)-1 && allCompleted {
-					DPrintf("[UpdateTask@master.go] *******************Change to Finish Phase********************")
+				if i == len(m.reducelist)-1 && allCompleted && m.mrphase == ReducePhase {
+					DPrintf("[UpdateTask@master.go] *******************Change to Finish Phase 1 allCompleted:=[%t]********************", allCompleted)
 					m.mrphase = FinishPhase
 				}
-				break
 			}
+		}
+		//Double Check
+		if allCompleted && m.mrphase == ReducePhase {
+			DPrintf("[UpdateTask@master.go] *******************Change to Finish PhasePhase 2 allCompleted:=[%t]********************", allCompleted)
+			m.mrphase = FinishPhase
 		}
 
 	}
